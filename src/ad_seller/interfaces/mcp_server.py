@@ -545,13 +545,13 @@ async def distribute_deal_via_ssp(
     inventory_type: str = "",
     name: str = "",
     account_id: int = 0,
-    targeting: str = "",
+    targeting: list[dict[str, Any]] | None = None,
 ) -> str:
     """Distribute a deal through configured SSP(s).
     Routes based on ssp_name or inventory_type routing rules.
-    Some SSPs (e.g. Index Exchange) require name, account_id, and/or
-    targeting to actually create the deal — pass targeting as a JSON array,
-    e.g. '[{"targetingType":"standard","keyName":"domain","sets":[{"values":[{"value":"example.com"}],"operator":"ANY_OF"}]}]'."""
+    Some SSPs (e.g. Index Exchange) require name, account_id, cpm, and/or
+    targeting to actually create the deal. targeting example:
+    [{"targetingType":"standard","keyName":"domain","sets":[{"values":[{"value":"example.com"}],"operator":"ANY_OF"}]}]."""
     import httpx
 
     settings = _get_settings()
@@ -569,7 +569,7 @@ async def distribute_deal_via_ssp(
     if account_id:
         body["account_id"] = account_id
     if targeting:
-        body["targeting"] = json.loads(targeting)
+        body["targeting"] = targeting
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{url}/api/v1/deals/distribute", json=body)
@@ -728,16 +728,18 @@ async def list_pending_approvals() -> str:
 
 @mcp.tool()
 async def approve_or_reject(
-    approval_id: str, decision: str, reason: str = "", modifications: str = ""
+    approval_id: str,
+    decision: str,
+    reason: str = "",
+    modifications: dict[str, Any] | None = None,
 ) -> str:
     """Submit an approval decision. decision: 'approve', 'reject', or 'counter'.
     Some gates require modifications when approving — e.g. a dsp_resolution
-    gate (seat ID matched multiple DSPs) needs a selected_dsp_id. Pass
-    modifications as a JSON object, e.g. '{"selected_dsp_id": 85}'. For an
-    SSP-distribution approval, you can also include any other field the SSP
-    needs that wasn't set when the gate fired (e.g. "account_id", "name",
-    "cpm", "targeting") in the same object — resume_approval applies all of
-    them, not just selected_dsp_id."""
+    gate (seat ID matched multiple DSPs) needs a selected_dsp_id, e.g.
+    {"selected_dsp_id": 85}. For an SSP-distribution approval, you can also
+    include any other field the SSP needs that wasn't set when the gate
+    fired (e.g. "account_id", "name", "cpm", "targeting") in the same
+    object — resume_approval applies all of them, not just selected_dsp_id."""
     import httpx
 
     settings = _get_settings()
@@ -747,7 +749,7 @@ async def approve_or_reject(
     if reason:
         body["reason"] = reason
     if modifications:
-        body["modifications"] = json.loads(modifications)
+        body["modifications"] = modifications
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{url}/approvals/{approval_id}/decide", json=body)
