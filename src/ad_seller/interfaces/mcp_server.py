@@ -535,9 +535,15 @@ async def distribute_deal_via_ssp(
     cpm: float = 0,
     ssp_name: str = "",
     inventory_type: str = "",
+    name: str = "",
+    account_id: int = 0,
+    targeting: list[dict[str, Any]] | None = None,
 ) -> str:
     """Distribute a deal through configured SSP(s).
-    Routes based on ssp_name or inventory_type routing rules."""
+    Routes based on ssp_name or inventory_type routing rules.
+    Some SSPs (e.g. Index Exchange) require name, account_id, cpm, and/or
+    targeting to actually create the deal. targeting example:
+    [{"targetingType":"standard","keyName":"domain","sets":[{"values":[{"value":"example.com"}],"operator":"ANY_OF"}]}]."""
     import httpx
 
     settings = _get_settings()
@@ -550,6 +556,12 @@ async def distribute_deal_via_ssp(
         body["ssp_name"] = ssp_name
     if inventory_type:
         body["inventory_type"] = inventory_type
+    if name:
+        body["name"] = name
+    if account_id:
+        body["account_id"] = account_id
+    if targeting:
+        body["targeting"] = targeting
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{url}/api/v1/deals/distribute", json=body)
@@ -707,8 +719,19 @@ async def list_pending_approvals() -> str:
 
 
 @mcp.tool()
-async def approve_or_reject(approval_id: str, decision: str, reason: str = "") -> str:
-    """Submit an approval decision. decision: 'approve', 'reject', or 'counter'."""
+async def approve_or_reject(
+    approval_id: str,
+    decision: str,
+    reason: str = "",
+    modifications: dict[str, Any] | None = None,
+) -> str:
+    """Submit an approval decision. decision: 'approve', 'reject', or 'counter'.
+    Some gates require modifications when approving — e.g. a dsp_resolution
+    gate (seat ID matched multiple DSPs) needs a selected_dsp_id, e.g.
+    {"selected_dsp_id": 85}. For an SSP-distribution approval, you can also
+    include any other field the SSP needs that wasn't set when the gate
+    fired (e.g. "account_id", "name", "cpm", "targeting") in the same
+    object — resume_approval applies all of them, not just selected_dsp_id."""
     import httpx
 
     settings = _get_settings()
@@ -717,9 +740,28 @@ async def approve_or_reject(approval_id: str, decision: str, reason: str = "") -
     body: dict[str, Any] = {"decision": decision}
     if reason:
         body["reason"] = reason
+    if modifications:
+        body["modifications"] = modifications
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{url}/approvals/{approval_id}/decide", json=body)
+        return resp.text
+
+
+@mcp.tool()
+async def resume_approval(approval_id: str) -> str:
+    """Resume a flow that was paused for approval, after a decision has been
+    submitted via approve_or_reject. For an approved dsp_resolution gate,
+    this is the step that actually calls the SSP's create_deal(). For a
+    rejected approval, this returns a rejection result without creating
+    anything."""
+    import httpx
+
+    settings = _get_settings()
+    url = getattr(settings, "seller_agent_url", "http://localhost:8000")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{url}/approvals/{approval_id}/resume")
         return resp.text
 
 
@@ -783,8 +825,12 @@ async def create_curated_deal(
     product_id: str = "",
     max_cpm: float = 0,
     impressions: int = 0,
+    buyer_seat_ids: str = "",
 ) -> str:
-    """Create a deal with curator overlay. The curator's fee is added on top."""
+    """Create a deal with curator overlay. The curator's fee is added on top.
+    Pass buyer_seat_ids as a comma-separated list to attach DSP-facing seat
+    IDs at creation time — needed for SSPs that resolve dspID from a seat
+    (e.g. Index Exchange) later, via distribute_deal_via_ssp."""
     import httpx
 
     settings = _get_settings()
@@ -797,6 +843,8 @@ async def create_curated_deal(
         body["max_cpm"] = max_cpm
     if impressions:
         body["impressions"] = impressions
+    if buyer_seat_ids:
+        body["buyer_seat_ids"] = [s.strip() for s in buyer_seat_ids.split(",") if s.strip()]
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f"{url}/api/v1/deals/curated", json=body)
