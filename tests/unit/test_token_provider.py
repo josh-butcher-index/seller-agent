@@ -24,7 +24,7 @@ from ad_seller.clients.token_provider import (
 )
 
 BASE_URL = "https://ix.test"
-PASSWORD = "s3cret-pa55word"
+SECRET = "s3cret-s3rvice-acc0unt"
 DEALS_PATH = "/api/deals/v3/deals"
 
 
@@ -52,7 +52,7 @@ class FakeIndex:
         self.valid_tokens: set[str] = set()
         self.valid_refresh_tokens: set[str] = set()
         self.calls: list[str] = []
-        self.login_status = 200
+        self.token_status = 200
         self.refresh_status: int | None = None
         self.deals_status: int | None = None
 
@@ -71,12 +71,10 @@ class FakeIndex:
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.calls.append(path)
-        if path.endswith("/login"):
-            if self.login_status != 200:
-                return httpx.Response(self.login_status, json={"message": "Unauthorized"})
-            return httpx.Response(
-                200, json={"loginResponse": {"redir": "deals", "authResponse": self._issue()}}
-            )
+        if path.endswith("/token"):
+            if self.token_status != 200:
+                return httpx.Response(self.token_status, json={"message": "Unauthorized"})
+            return httpx.Response(200, json=self._issue())
         if path.endswith("/refresh"):
             body = json.loads(request.content)
             if self.refresh_status is not None:
@@ -98,8 +96,8 @@ class FakeIndex:
 def _provider(index: FakeIndex, clock: FakeClock | None = None) -> IndexExchangeTokenProvider:
     provider = IndexExchangeTokenProvider(
         base_url=BASE_URL,
-        username="agent@example.com",
-        password=SecretStr(PASSWORD),
+        service_account_id="svc-123",
+        service_account_secret=SecretStr(SECRET),
         transport=httpx.MockTransport(index.handler),
     )
     if clock is not None:
@@ -126,27 +124,27 @@ class TestIndexExchangeTokenLifecycle:
 
         assert first.status_code == second.status_code == 200
         assert second.json()["token"] == "access-1"
-        assert index.count("/login") == 1
+        assert index.count("/token") == 1
 
     @pytest.mark.asyncio
-    async def test_login_sends_username_and_password(self):
+    async def test_token_request_sends_id_and_secret(self):
         sent = []
 
         def handler(request):
             sent.append(json.loads(request.content))
             return httpx.Response(
                 200,
-                json={"loginResponse": {"authResponse": {"access_token": "a", "expires_in": 60}}},
+                json={"access_token": "a", "expires_in": 60},
             )
 
         provider = IndexExchangeTokenProvider(
             base_url=BASE_URL,
-            username="agent@example.com",
-            password=SecretStr(PASSWORD),
+            service_account_id="svc-123",
+            service_account_secret=SecretStr(SECRET),
             transport=httpx.MockTransport(handler),
         )
         assert await provider.get_token() == "a"
-        assert sent == [{"username": "agent@example.com", "password": PASSWORD}]
+        assert sent == [{"id": "svc-123", "secret": SECRET}]
 
     @pytest.mark.asyncio
     async def test_token_near_expiry_is_refreshed_and_rotated_refresh_token_is_used(self):
@@ -160,7 +158,7 @@ class TestIndexExchangeTokenLifecycle:
         clock.now += 300 - 60
         assert await provider.get_token() == "access-3"
 
-        assert index.count("/login") == 1
+        assert index.count("/token") == 1
         assert index.count("/refresh") == 2
 
     @pytest.mark.asyncio
@@ -176,7 +174,7 @@ class TestIndexExchangeTokenLifecycle:
         assert await provider.get_token() == "access-2"
         assert index.calls[-2:] == [
             "/api/authentication/v1/refresh",
-            "/api/authentication/v1/login",
+            "/api/authentication/v1/token",
         ]
 
     @pytest.mark.asyncio
@@ -190,7 +188,7 @@ class TestIndexExchangeTokenLifecycle:
         clock.now += 300
 
         assert await provider.get_token() == "access-2"
-        assert index.count("/login") == 2
+        assert index.count("/token") == 2
 
     @pytest.mark.asyncio
     async def test_401_from_api_renews_token_and_retries_once(self):
@@ -255,7 +253,7 @@ class TestRenewalFailureHandling:
         provider = _provider(index, clock)
         await provider.get_token()
         index.refresh_status = 503
-        index.login_status = 503
+        index.token_status = 503
         clock.now += 250  # inside the refresh margin, before expiry
 
         with caplog.at_level(logging.WARNING):
@@ -272,7 +270,7 @@ class TestRenewalFailureHandling:
         provider = _provider(index)
         await provider.get_token()
         index.refresh_status = 503
-        index.login_status = 503
+        index.token_status = 503
 
         with pytest.raises(SSPAuthenticationError):
             await provider.get_token(rejected_token="access-1")
@@ -284,16 +282,16 @@ class TestRenewalFailureHandling:
         provider = _provider(index, clock)
         await provider.get_token()
         index.refresh_status = 503
-        index.login_status = 503
+        index.token_status = 503
         clock.now += 250
         await provider.get_token()  # falls back to the unexpired token
 
         index.refresh_status = None
-        index.login_status = 200
+        index.token_status = 200
         clock.now += 10
         assert await provider.get_token() == "access-2"
         assert index.calls[-1] == "/api/authentication/v1/refresh"
-        assert index.count("/login") == 2  # the initial login and the one failed attempt
+        assert index.count("/token") == 2  # the initial login and the one failed attempt
 
     @pytest.mark.asyncio
     async def test_rejected_refresh_does_not_clear_a_newer_refresh_token(self):
@@ -315,7 +313,7 @@ class TestRenewalFailureHandling:
     @pytest.mark.asyncio
     async def test_rejected_login_raises_a_new_exception_each_time(self):
         index = FakeIndex()
-        index.login_status = 401
+        index.token_status = 401
         provider = _provider(index)
 
         raised = []
@@ -345,7 +343,7 @@ class TestIndexExchangeLoginFailures:
     @pytest.mark.asyncio
     async def test_rejected_login_is_a_clear_error_without_secrets(self, caplog):
         index = FakeIndex()
-        index.login_status = 401
+        index.token_status = 401
         provider = _provider(index)
 
         with caplog.at_level(logging.DEBUG):
@@ -353,30 +351,31 @@ class TestIndexExchangeLoginFailures:
                 await provider.get_token()
 
         message = str(exc_info.value)
-        assert "login was rejected (401)" in message
-        assert "INDEX_EXCHANGE_PASSWORD" in message
-        assert PASSWORD not in message
-        assert PASSWORD not in caplog.text
+        assert "token request was rejected (401)" in message
+        assert "INDEX_EXCHANGE_SERVICE_ACCOUNT_SECRET" in message
+        assert "programmatic group" in message
+        assert SECRET not in message
+        assert SECRET not in caplog.text
 
     @pytest.mark.asyncio
     async def test_rejected_login_is_never_retried(self):
         index = FakeIndex()
-        index.login_status = 401
+        index.token_status = 401
         provider = _provider(index)
 
         for _ in range(5):
             with pytest.raises(CredentialsRejectedError):
                 await provider.get_token()
-        index.login_status = 200  # even if the server would now accept it
+        index.token_status = 200  # even if the server would now accept it
         with pytest.raises(CredentialsRejectedError):
             await provider.get_token()
 
-        assert index.count("/login") == 1
+        assert index.count("/token") == 1
 
     @pytest.mark.asyncio
     async def test_transient_login_failure_backs_off(self):
         index = FakeIndex()
-        index.login_status = 503
+        index.token_status = 503
         clock = FakeClock()
         provider = _provider(index, clock)
 
@@ -384,12 +383,12 @@ class TestIndexExchangeLoginFailures:
             await provider.get_token()
         with pytest.raises(SSPAuthenticationError, match="next Index Exchange login attempt"):
             await provider.get_token()
-        assert index.count("/login") == 1
+        assert index.count("/token") == 1
 
-        index.login_status = 200
+        index.token_status = 200
         clock.now += 1
         assert await provider.get_token() == "access-1"
-        assert index.count("/login") == 2
+        assert index.count("/token") == 2
 
     @pytest.mark.asyncio
     async def test_network_error_is_an_authentication_error(self):
@@ -398,28 +397,31 @@ class TestIndexExchangeLoginFailures:
 
         provider = IndexExchangeTokenProvider(
             base_url=BASE_URL,
-            username="agent@example.com",
-            password=SecretStr(PASSWORD),
+            service_account_id="svc-123",
+            service_account_secret=SecretStr(SECRET),
             transport=httpx.MockTransport(handler),
         )
-        with pytest.raises(SSPAuthenticationError, match="login request failed: ConnectError"):
+        with pytest.raises(
+            SSPAuthenticationError, match="token request could not be sent: ConnectError"
+        ):
             await provider.get_token()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "body",
         [
-            {"loginResponse": {"authResponse": {"expires_in": 60}}},
-            {"loginResponse": {"authResponse": {"access_token": "a"}}},
+            {"expires_in": 60},
+            {"access_token": "a"},
+            {"access_token": "a", "expires_in": 0},
             {"unexpected": True},
             ["not", "a", "dict"],
         ],
     )
-    async def test_malformed_login_response_is_an_authentication_error(self, body):
+    async def test_malformed_token_response_is_an_authentication_error(self, body):
         provider = IndexExchangeTokenProvider(
             base_url=BASE_URL,
-            username="agent@example.com",
-            password=SecretStr(PASSWORD),
+            service_account_id="svc-123",
+            service_account_secret=SecretStr(SECRET),
             transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)),
         )
         with pytest.raises(SSPAuthenticationError):
@@ -433,43 +435,47 @@ class TestIndexExchangeTokenProviderConfig:
     def test_refuses_to_send_credentials_without_https(self, base_url):
         with pytest.raises(ValueError, match="must use https"):
             IndexExchangeTokenProvider(
-                base_url=base_url, username="u@example.com", password=SecretStr("p")
+                base_url=base_url, service_account_id="svc-u", service_account_secret=SecretStr("p")
             )
 
     def test_allows_plain_http_to_localhost(self):
         IndexExchangeTokenProvider(
-            base_url="http://localhost:8080", username="u@example.com", password=SecretStr("p")
+            base_url="http://localhost:8080",
+            service_account_id="svc-u",
+            service_account_secret=SecretStr("p"),
         )
 
     def test_shared_provider_is_reused_per_credential(self):
         first = IndexExchangeSSPClient(
-            base_url=BASE_URL, username="a@example.com", password=SecretStr("p")
+            base_url=BASE_URL, service_account_id="svc-a", service_account_secret=SecretStr("p")
         )
         second = IndexExchangeSSPClient(
-            base_url=BASE_URL + "/", username="a@example.com", password=SecretStr("p")
+            base_url=BASE_URL + "/",
+            service_account_id="svc-a",
+            service_account_secret=SecretStr("p"),
         )
         other_user = IndexExchangeSSPClient(
-            base_url=BASE_URL, username="b@example.com", password=SecretStr("p")
+            base_url=BASE_URL, service_account_id="svc-b", service_account_secret=SecretStr("p")
         )
-        new_password = IndexExchangeSSPClient(
-            base_url=BASE_URL, username="a@example.com", password=SecretStr("q")
+        new_secret = IndexExchangeSSPClient(
+            base_url=BASE_URL, service_account_id="svc-a", service_account_secret=SecretStr("q")
         )
 
         assert first._token_provider is second._token_provider
         assert first._token_provider is not other_user._token_provider
-        assert first._token_provider is not new_password._token_provider
+        assert first._token_provider is not new_secret._token_provider
 
-    def test_provider_repr_does_not_expose_password(self):
+    def test_provider_repr_does_not_expose_the_secret(self):
         provider = IndexExchangeTokenProvider(
-            base_url=BASE_URL, username="u@example.com", password=SecretStr(PASSWORD)
+            base_url=BASE_URL, service_account_id="svc-u", service_account_secret=SecretStr(SECRET)
         )
-        assert PASSWORD not in repr(provider)
-        assert PASSWORD not in repr(vars(provider))
+        assert SECRET not in repr(provider)
+        assert SECRET not in repr(vars(provider))
 
     @pytest.mark.asyncio
     async def test_connect_authenticates_requests_with_the_provider(self):
         client = IndexExchangeSSPClient(
-            base_url=BASE_URL, username="a@example.com", password=SecretStr("p")
+            base_url=BASE_URL, service_account_id="svc-a", service_account_secret=SecretStr("p")
         )
         await client.connect()
         try:
@@ -506,8 +512,8 @@ class TestSSPFactoryCredentials:
             "ssp_connectors": "index_exchange",
             "ssp_routing_rules": "",
             "index_exchange_api_url": "https://app.indexexchange.com",
-            "index_exchange_username": "",
-            "index_exchange_password": None,
+            "index_exchange_service_account_id": "",
+            "index_exchange_service_account_secret": None,
             "index_exchange_api_key": None,
         }
         values.update(overrides)
@@ -518,8 +524,8 @@ class TestSSPFactoryCredentials:
 
         registry = build_ssp_registry(
             self._settings(
-                index_exchange_username="agent@example.com",
-                index_exchange_password=SecretStr("pw"),
+                index_exchange_service_account_id="svc-123",
+                index_exchange_service_account_secret=SecretStr("pw"),
             )
         )
         client = registry.get_client("index_exchange")
@@ -529,8 +535,8 @@ class TestSSPFactoryCredentials:
         from ad_seller.clients.ssp_factory import build_ssp_registry
 
         settings = self._settings(
-            index_exchange_username="agent@example.com",
-            index_exchange_password=SecretStr("pw"),
+            index_exchange_service_account_id="svc-123",
+            index_exchange_service_account_secret=SecretStr("pw"),
         )
         first = build_ssp_registry(settings).get_client("index_exchange")
         second = build_ssp_registry(settings).get_client("index_exchange")
@@ -555,5 +561,5 @@ class TestSSPFactoryCredentials:
             registry = build_ssp_registry(self._settings())
 
         assert registry.list_ssps() == []
-        assert "INDEX_EXCHANGE_USERNAME" in caplog.text
+        assert "INDEX_EXCHANGE_SERVICE_ACCOUNT_ID" in caplog.text
         assert "INDEX_EXCHANGE_API_KEY" not in caplog.text

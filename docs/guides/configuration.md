@@ -69,8 +69,8 @@ ad-seller freewheel-login --provider bc
 | `PUBMATIC_MCP_URL` | `str` | `None` | PubMatic MCP endpoint (e.g., `https://mcp.pubmatic.com/sses`) |
 | `PUBMATIC_API_KEY` | `str` | `None` | PubMatic API key |
 | `INDEX_EXCHANGE_API_URL` | `str` | `None` | Index Exchange REST API FQDN only (no path), e.g. `https://app.indexexchange.com` — the connector applies path prefixes per-endpoint |
-| `INDEX_EXCHANGE_USERNAME` | `str` | `None` | Index Exchange user (email) the connector logs in as. Use a dedicated user with only the access the agent needs |
-| `INDEX_EXCHANGE_PASSWORD` | `str` | `None` | Password for that user. The connector logs in and refreshes its own bearer token; keep this in a secret manager. Changing it requires a restart |
+| `INDEX_EXCHANGE_SERVICE_ACCOUNT_ID` | `str` | `None` | Index Exchange programmatic service account ID. Ask your Index Exchange representative for a service account in the programmatic group with deal-management access |
+| `INDEX_EXCHANGE_SERVICE_ACCOUNT_SECRET` | `str` | `None` | Secret for that service account. The connector gets and refreshes its own bearer token; keep this in a secret manager. Changing it requires a restart |
 | `MAGNITE_API_URL` | `str` | `None` | Magnite REST API URL |
 | `MAGNITE_API_KEY` | `str` | `None` | Magnite API key |
 

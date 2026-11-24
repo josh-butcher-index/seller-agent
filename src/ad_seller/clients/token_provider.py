@@ -57,7 +57,7 @@ class StaticTokenProvider(TokenProvider):
 class RefreshingTokenProvider(TokenProvider):
     """Caches an expiring token, renewing it by refresh or login; safe across threads and loops.
 
-    A rejected login is never retried, so a wrong password can't trip brute-force detection.
+    A rejected login is never retried, so a wrong secret can't trip brute-force detection.
     """
 
     def __init__(

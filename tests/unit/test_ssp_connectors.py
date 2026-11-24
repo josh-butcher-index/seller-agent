@@ -40,8 +40,8 @@ def _make_settings(**overrides):
         "magnite_api_url": "",
         "magnite_api_key": "",
         "index_exchange_api_url": "",
-        "index_exchange_username": "",
-        "index_exchange_password": None,
+        "index_exchange_service_account_id": "",
+        "index_exchange_service_account_secret": None,
         "index_exchange_api_key": None,
     }
     defaults.update(overrides)
@@ -62,8 +62,8 @@ class TestSSPFactory:
         settings = _make_settings(
             ssp_connectors="index_exchange",
             index_exchange_api_url="https://app.indexexchange.com",
-            index_exchange_username="agent@example.com",
-            index_exchange_password=SecretStr("pw"),
+            index_exchange_service_account_id="svc-123",
+            index_exchange_service_account_secret=SecretStr("pw"),
         )
         registry = build_ssp_registry(settings)
         client = registry.get_client("index_exchange")
@@ -113,8 +113,8 @@ class TestSSPFactory:
         settings = _make_settings(
             ssp_connectors="index_exchange",
             index_exchange_api_url="https://app.indexexchange.com",
-            index_exchange_username="agent@example.com",
-            index_exchange_password=SecretStr("pw"),
+            index_exchange_service_account_id="svc-123",
+            index_exchange_service_account_secret=SecretStr("pw"),
             ssp_routing_rules="ctv:index_exchange,display:index_exchange",
         )
         registry = build_ssp_registry(settings)

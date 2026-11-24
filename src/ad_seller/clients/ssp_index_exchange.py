@@ -22,7 +22,7 @@ Key endpoints (FQDN + path):
   - GET    /api/deals/v3/deals/reports       — Deals data export
   - GET    /api/deals/v1/dsps/-/seats        — Resolve dspID(s) from seat IDs
     (see resolve_dsp_ids_for_seat_ids() below)
-  - POST   /api/authentication/v1/login      — Log in with username/password
+  - POST   /api/authentication/v1/token      — Get tokens for a programmatic service account
   - POST   /api/authentication/v1/refresh    — Exchange a refresh token for new tokens
     (see IndexExchangeTokenProvider below)
 
@@ -217,17 +217,17 @@ def _token_grant(data: Any, action: str) -> TokenGrant:
 
 
 class IndexExchangeTokenProvider(RefreshingTokenProvider):
-    """Index Exchange tokens via POST /api/authentication/v1/login and /refresh.
+    """Index Exchange service-account tokens via POST /api/authentication/v1/token and /refresh.
 
-    Tokens are opaque to this client and only held in memory.
+    The account must be in Index Exchange's programmatic group; tokens are only held in memory.
     """
 
     def __init__(
         self,
         *,
         base_url: str,
-        username: str,
-        password: SecretStr,
+        service_account_id: str,
+        service_account_secret: SecretStr,
         timeout: int = 30,
         transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> None:
@@ -235,44 +235,59 @@ class IndexExchangeTokenProvider(RefreshingTokenProvider):
         _require_https(base_url)
         super().__init__(provider_name="Index Exchange")
         auth_url = f"{base_url.rstrip('/')}{_AUTH_BASE_PATH}"
-        self._login_url = f"{auth_url}/login"
+        self._token_url = f"{auth_url}/token"
         self._refresh_url = f"{auth_url}/refresh"
-        self._username = username
-        self._password = password
+        self._service_account_id = service_account_id
+        self._service_account_secret = service_account_secret
         self._timeout = timeout
         self._transport = transport
 
     @classmethod
     def shared(
-        cls, *, base_url: str, username: str, password: SecretStr
+        cls, *, base_url: str, service_account_id: str, service_account_secret: SecretStr
     ) -> "IndexExchangeTokenProvider":
-        """The process-wide provider for these credentials."""
-        password_digest = hashlib.sha256(password.get_secret_value().encode()).hexdigest()
-        key = (cls, base_url.rstrip("/"), username, password_digest)
+        """The process-wide provider for this service account."""
+        secret_digest = hashlib.sha256(
+            service_account_secret.get_secret_value().encode()
+        ).hexdigest()
+        key = (cls, base_url.rstrip("/"), service_account_id, secret_digest)
         return shared_token_provider(
-            key, lambda: cls(base_url=base_url, username=username, password=password)
+            key,
+            lambda: cls(
+                base_url=base_url,
+                service_account_id=service_account_id,
+                service_account_secret=service_account_secret,
+            ),
         )
 
     async def _login(self) -> TokenGrant:
         body = await self._post(
-            self._login_url,
-            {"username": self._username, "password": self._password.get_secret_value()},
-            action="login",
+            self._token_url,
+            {
+                "id": self._service_account_id,
+                "secret": self._service_account_secret.get_secret_value(),
+            },
+            action="token request",
+            rejected_hint=(
+                "Check INDEX_EXCHANGE_SERVICE_ACCOUNT_ID and INDEX_EXCHANGE_SERVICE_ACCOUNT_SECRET, "
+                "and that the account is in Index Exchange's programmatic group."
+            ),
         )
-        login_response = body.get("loginResponse") if isinstance(body, dict) else None
-        auth_response = (
-            login_response.get("authResponse") if isinstance(login_response, dict) else None
-        )
-        return _token_grant(auth_response, "login")
+        return _token_grant(body, "token request")
 
     async def _refresh(self, refresh_token: str) -> TokenGrant:
         body = await self._post(
-            self._refresh_url, {"refreshToken": refresh_token}, action="token refresh"
+            self._refresh_url,
+            {"refreshToken": refresh_token},
+            action="token refresh",
+            rejected_hint="The refresh token is no longer valid.",
         )
         return _token_grant(body, "token refresh")
 
-    async def _post(self, url: str, payload: dict[str, str], *, action: str) -> Any:
-        # A fresh client per call keeps no login cookies and is never shared across event loops.
+    async def _post(
+        self, url: str, payload: dict[str, str], *, action: str, rejected_hint: str
+    ) -> Any:
+        # A fresh client per call keeps no cookies and is never shared across event loops.
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout, follow_redirects=False, transport=self._transport
@@ -280,17 +295,13 @@ class IndexExchangeTokenProvider(RefreshingTokenProvider):
                 response = await http.post(url, json=payload)
         except httpx.HTTPError as exc:
             raise SSPAuthenticationError(
-                f"Index Exchange {action} request failed: {type(exc).__name__}"
+                f"Index Exchange {action} could not be sent: {type(exc).__name__}"
             ) from exc
 
         if response.status_code == 401:
             raise CredentialsRejectedError(
                 f"Index Exchange {action} was rejected (401): {_error_message(response)}. "
-                + (
-                    "Check INDEX_EXCHANGE_USERNAME and INDEX_EXCHANGE_PASSWORD."
-                    if action == "login"
-                    else "The refresh token is no longer valid."
-                )
+                f"{rejected_hint}"
             )
         if not response.is_success:
             raise SSPAuthenticationError(
@@ -317,11 +328,11 @@ class IndexExchangeSSPClient(RESTSSPClient):
     Config:
         INDEX_EXCHANGE_API_URL=https://app.indexexchange.com   (FQDN only —
             see _API_BASE_PATH for why the /api/deals prefix isn't baked in here)
-        INDEX_EXCHANGE_USERNAME=<index-exchange-user-email>
-        INDEX_EXCHANGE_PASSWORD=<index-exchange-user-password>
+        INDEX_EXCHANGE_SERVICE_ACCOUNT_ID=<programmatic-service-account-id>
+        INDEX_EXCHANGE_SERVICE_ACCOUNT_SECRET=<programmatic-service-account-secret>
 
-    The client logs in and refreshes its own bearer token through
-    IndexExchangeTokenProvider, which is shared process-wide per credential.
+    The client gets and refreshes its own bearer token through
+    IndexExchangeTokenProvider, which is shared process-wide per service account.
 
     account.accountID is not a fixed deployment-wide setting — a single
     seller-agent instance may need to create deals under more than one
@@ -333,13 +344,15 @@ class IndexExchangeSSPClient(RESTSSPClient):
         self,
         *,
         base_url: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[SecretStr] = None,
+        service_account_id: Optional[str] = None,
+        service_account_secret: Optional[SecretStr] = None,
     ) -> None:
         token_provider = None
-        if base_url and username and password:
+        if base_url and service_account_id and service_account_secret:
             token_provider = IndexExchangeTokenProvider.shared(
-                base_url=base_url, username=username, password=password
+                base_url=base_url,
+                service_account_id=service_account_id,
+                service_account_secret=service_account_secret,
             )
         super().__init__(
             ssp_type=SSPType.INDEX_EXCHANGE,

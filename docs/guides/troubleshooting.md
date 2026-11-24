@@ -110,30 +110,33 @@ The deal was created in the seller agent but not yet pushed to PubMatic.
 
 ### Index Exchange API Errors
 
-The connector logs in with `INDEX_EXCHANGE_USERNAME` / `INDEX_EXCHANGE_PASSWORD`
-and refreshes its bearer token on its own; there is no token to re-issue by hand.
+The connector gets a bearer token for the service account in
+`INDEX_EXCHANGE_SERVICE_ACCOUNT_ID` / `INDEX_EXCHANGE_SERVICE_ACCOUNT_SECRET` and
+refreshes it on its own; there is no token to re-issue by hand.
 Authentication failures return HTTP 502 with `"error": "ssp_authentication_failed"`.
 
-**Error: `Index Exchange login was rejected (401)`**
+**Error: `Index Exchange token request was rejected (401)`**
 
-The username or password is wrong. After a rejected login the connector makes
-no further login attempts (so it can't lock the account through repeated
-failures) until the credentials are fixed and the service is restarted.
+The service account ID or secret is wrong, or the account isn't in Index
+Exchange's programmatic group (ask your Index Exchange representative). After a
+rejection the connector makes no further attempts (so it can't lock the account
+through repeated failures) until the settings are fixed and the service is
+restarted.
 
-**Error: `Index Exchange login failed with HTTP 5xx` / `login request failed`**
+**Error: `Index Exchange token request failed with HTTP 5xx` / `token request could not be sent`**
 
 The Index Exchange authentication API was unreachable or errored. The connector
 retries with a backoff of up to 60 seconds; no action is needed unless it persists.
 
-**Warning at startup: `INDEX_EXCHANGE_USERNAME / INDEX_EXCHANGE_PASSWORD not set`**
+**Warning at startup: `INDEX_EXCHANGE_SERVICE_ACCOUNT_ID / INDEX_EXCHANGE_SERVICE_ACCOUNT_SECRET not set`**
 
 Index Exchange is skipped until both are set. `INDEX_EXCHANGE_API_KEY` is no
 longer used.
 
 **Error: `Index Exchange: 403 Forbidden`**
 
-The user doesn't have permission for that operation. Contact your Index Exchange
-account manager to confirm the user has deal management access.
+The service account doesn't have permission for that operation. Contact your
+Index Exchange representative to confirm it has deal management access.
 
 **Error: `ValueError: external_deal_id is required` / `account_id is required` / `dsp_id is required`**
 

@@ -108,21 +108,24 @@ def _create_ssp_client(name: str, settings: Any) -> Any:
             logger.warning("Index Exchange configured but INDEX_EXCHANGE_API_URL not set")
             return None
 
-        if not settings.index_exchange_username or not settings.index_exchange_password:
+        if (
+            not settings.index_exchange_service_account_id
+            or not settings.index_exchange_service_account_secret
+        ):
             hint = ""
             if getattr(settings, "index_exchange_api_key", None):
-                hint = " INDEX_EXCHANGE_API_KEY is no longer used; the client logs in itself."
+                hint = " INDEX_EXCHANGE_API_KEY is no longer used; the client gets its own token."
             logger.warning(
-                "Index Exchange configured but INDEX_EXCHANGE_USERNAME / "
-                "INDEX_EXCHANGE_PASSWORD not set.%s",
+                "Index Exchange configured but INDEX_EXCHANGE_SERVICE_ACCOUNT_ID / "
+                "INDEX_EXCHANGE_SERVICE_ACCOUNT_SECRET not set.%s",
                 hint,
             )
             return None
 
         return IndexExchangeSSPClient(
             base_url=settings.index_exchange_api_url,
-            username=settings.index_exchange_username,
-            password=settings.index_exchange_password,
+            service_account_id=settings.index_exchange_service_account_id,
+            service_account_secret=settings.index_exchange_service_account_secret,
         )
 
     else:

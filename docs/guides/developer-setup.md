@@ -80,8 +80,8 @@ PUBMATIC_API_KEY=your-pubmatic-key
 
 # Index Exchange (REST) — FQDN only, no path; the connector applies /api/deals itself
 INDEX_EXCHANGE_API_URL=https://app.indexexchange.com
-INDEX_EXCHANGE_USERNAME=your-index-exchange-user@example.com
-INDEX_EXCHANGE_PASSWORD=your-index-exchange-password
+INDEX_EXCHANGE_SERVICE_ACCOUNT_ID=your-service-account-id
+INDEX_EXCHANGE_SERVICE_ACCOUNT_SECRET=your-service-account-secret
 
 # Routing rules (optional)
 SSP_ROUTING_RULES=ctv:pubmatic,display:index_exchange

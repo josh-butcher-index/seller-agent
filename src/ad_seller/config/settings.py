@@ -199,9 +199,9 @@ class Settings(BaseSettings):
     magnite_api_key: Optional[str] = None
     # Index Exchange SSP (REST API)
     index_exchange_api_url: Optional[str] = None
-    # Index Exchange user credentials; the client logs in and refreshes its own token.
-    index_exchange_username: Optional[str] = None
-    index_exchange_password: Optional[SecretStr] = None
+    # Index Exchange programmatic service account; the client gets and refreshes its own token.
+    index_exchange_service_account_id: Optional[str] = None
+    index_exchange_service_account_secret: Optional[SecretStr] = None
     # No longer used: read only so a leftover static token gets a startup warning.
     index_exchange_api_key: Optional[SecretStr] = None
 
