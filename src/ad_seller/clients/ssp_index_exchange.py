@@ -22,6 +22,9 @@ Key endpoints (FQDN + path):
   - GET    /api/deals/v3/deals/reports       — Deals data export
   - GET    /api/deals/v1/dsps/-/seats        — Resolve dspID(s) from seat IDs
     (see resolve_dsp_ids_for_seat_ids() below)
+  - POST   /api/authentication/v1/login      — Log in with username/password
+  - POST   /api/authentication/v1/refresh    — Exchange a refresh token for new tokens
+    (see IndexExchangeTokenProvider below)
 
 There is no clone/copy endpoint — clone_deal() below implements cloning by
 composing get_deal() + create_deal() instead.
@@ -43,22 +46,22 @@ Known limitations:
     seller-agent instance may need to create deals under more than one
     Index account, so it must be supplied per-request via
     SSPDealCreateRequest.account_id until callers are wired up to provide it.
-  - No Keycloak JWT refresh: INDEX_EXCHANGE_API_KEY is treated as a
-    long-lived token; production tokens expire and must be refreshed via
-    the client-credentials grant, which is not implemented here.
   - The new Deals API `floorCurrency` field (create-only, feature-flagged)
     is not supported; all deals are assumed USD.
 """
 
 import asyncio
+import hashlib
 import logging
 import uuid
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from .ssp_base import (
+    SSPAuthenticationError,
     SSPDeal,
     SSPDealCreateRequest,
     SSPDealOutcomeUnknownError,
@@ -68,6 +71,12 @@ from .ssp_base import (
     SSPType,
 )
 from .ssp_rest_client import RESTSSPClient
+from .token_provider import (
+    CredentialsRejectedError,
+    RefreshingTokenProvider,
+    TokenGrant,
+    shared_token_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +172,139 @@ class DspSeatMatch(BaseModel):
     status: str = ""
 
 
+_AUTH_BASE_PATH = "/api/authentication/v1"
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _require_https(base_url: str) -> None:
+    """Refuse to send credentials over plain HTTP, except to a local test server."""
+    parsed = urlparse(base_url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and parsed.hostname in _LOCAL_HOSTS:
+        return
+    raise ValueError(
+        "INDEX_EXCHANGE_API_URL must use https:// to send Index Exchange credentials "
+        f"(got scheme '{parsed.scheme}')"
+    )
+
+
+def _error_message(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.reason_phrase
+    if isinstance(body, dict) and isinstance(body.get("message"), str):
+        return body["message"]
+    return response.reason_phrase
+
+
+def _token_grant(data: Any, action: str) -> TokenGrant:
+    if not isinstance(data, dict):
+        raise SSPAuthenticationError(f"Index Exchange {action} returned an unexpected response")
+    access_token = data.get("access_token")
+    expires_in = data.get("expires_in")
+    if not isinstance(access_token, str) or not access_token:
+        raise SSPAuthenticationError(f"Index Exchange {action} response has no access_token")
+    if not isinstance(expires_in, int) or expires_in <= 0:
+        raise SSPAuthenticationError(f"Index Exchange {action} response has no valid expires_in")
+    refresh_token = data.get("refresh_token")
+    return TokenGrant(
+        access_token=access_token,
+        expires_in=expires_in,
+        refresh_token=refresh_token if isinstance(refresh_token, str) and refresh_token else None,
+    )
+
+
+class IndexExchangeTokenProvider(RefreshingTokenProvider):
+    """Index Exchange tokens via POST /api/authentication/v1/login and /refresh.
+
+    Tokens are opaque to this client and only held in memory.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        username: str,
+        password: SecretStr,
+        timeout: int = 30,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
+    ) -> None:
+        """`transport` overrides the HTTP transport for auth calls (used by tests)."""
+        _require_https(base_url)
+        super().__init__(provider_name="Index Exchange")
+        auth_url = f"{base_url.rstrip('/')}{_AUTH_BASE_PATH}"
+        self._login_url = f"{auth_url}/login"
+        self._refresh_url = f"{auth_url}/refresh"
+        self._username = username
+        self._password = password
+        self._timeout = timeout
+        self._transport = transport
+
+    @classmethod
+    def shared(
+        cls, *, base_url: str, username: str, password: SecretStr
+    ) -> "IndexExchangeTokenProvider":
+        """The process-wide provider for these credentials."""
+        password_digest = hashlib.sha256(password.get_secret_value().encode()).hexdigest()
+        key = (cls, base_url.rstrip("/"), username, password_digest)
+        return shared_token_provider(
+            key, lambda: cls(base_url=base_url, username=username, password=password)
+        )
+
+    async def _login(self) -> TokenGrant:
+        body = await self._post(
+            self._login_url,
+            {"username": self._username, "password": self._password.get_secret_value()},
+            action="login",
+        )
+        login_response = body.get("loginResponse") if isinstance(body, dict) else None
+        auth_response = (
+            login_response.get("authResponse") if isinstance(login_response, dict) else None
+        )
+        return _token_grant(auth_response, "login")
+
+    async def _refresh(self, refresh_token: str) -> TokenGrant:
+        body = await self._post(
+            self._refresh_url, {"refreshToken": refresh_token}, action="token refresh"
+        )
+        return _token_grant(body, "token refresh")
+
+    async def _post(self, url: str, payload: dict[str, str], *, action: str) -> Any:
+        # A fresh client per call keeps no login cookies and is never shared across event loops.
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, follow_redirects=False, transport=self._transport
+            ) as http:
+                response = await http.post(url, json=payload)
+        except httpx.HTTPError as exc:
+            raise SSPAuthenticationError(
+                f"Index Exchange {action} request failed: {type(exc).__name__}"
+            ) from exc
+
+        if response.status_code == 401:
+            raise CredentialsRejectedError(
+                f"Index Exchange {action} was rejected (401): {_error_message(response)}. "
+                + (
+                    "Check INDEX_EXCHANGE_USERNAME and INDEX_EXCHANGE_PASSWORD."
+                    if action == "login"
+                    else "The refresh token is no longer valid."
+                )
+            )
+        if not response.is_success:
+            raise SSPAuthenticationError(
+                f"Index Exchange {action} failed with HTTP {response.status_code}: "
+                f"{_error_message(response)}"
+            )
+        try:
+            return response.json()
+        except ValueError:
+            raise SSPAuthenticationError(
+                f"Index Exchange {action} returned a non-JSON response"
+            ) from None
+
+
 class IndexExchangeSSPClient(RESTSSPClient):
     """Index Exchange SSP client using their REST API.
 
@@ -175,7 +317,11 @@ class IndexExchangeSSPClient(RESTSSPClient):
     Config:
         INDEX_EXCHANGE_API_URL=https://app.indexexchange.com   (FQDN only —
             see _API_BASE_PATH for why the /api/deals prefix isn't baked in here)
-        INDEX_EXCHANGE_API_KEY=<keycloak-jwt-bearer-token>
+        INDEX_EXCHANGE_USERNAME=<index-exchange-user-email>
+        INDEX_EXCHANGE_PASSWORD=<index-exchange-user-password>
+
+    The client logs in and refreshes its own bearer token through
+    IndexExchangeTokenProvider, which is shared process-wide per credential.
 
     account.accountID is not a fixed deployment-wide setting — a single
     seller-agent instance may need to create deals under more than one
@@ -187,13 +333,19 @@ class IndexExchangeSSPClient(RESTSSPClient):
         self,
         *,
         base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[SecretStr] = None,
     ) -> None:
+        token_provider = None
+        if base_url and username and password:
+            token_provider = IndexExchangeTokenProvider.shared(
+                base_url=base_url, username=username, password=password
+            )
         super().__init__(
             ssp_type=SSPType.INDEX_EXCHANGE,
             ssp_name="Index Exchange",
             base_url=base_url,
-            api_key=api_key,
+            token_provider=token_provider,
             auth_header="Authorization",
             auth_prefix="Bearer",
         )

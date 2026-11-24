@@ -510,6 +510,19 @@ class TestResumeSSPDistributionHardening:
         assert exc_info.value.status_code == 502
         assert self.storage._store["approval:apr-999"]["status"] == "outcome_unknown"
 
+    @pytest.mark.asyncio
+    async def test_authentication_failure_maps_to_502_and_restores_approved(self):
+        from ad_seller.clients.ssp_base import SSPAuthenticationError
+
+        with pytest.raises(HTTPException) as exc_info:
+            await self._resume(
+                {"selected_dsp_id": 52},
+                create_side_effect=SSPAuthenticationError("Index Exchange login was rejected"),
+            )
+        assert exc_info.value.status_code == 502
+        assert "login was rejected" in exc_info.value.detail
+        assert self.storage._store["approval:apr-999"]["status"] == "approved"
+
     async def _resume_unknown(self, find_result=None, find_side_effect=None):
         request = self._approval_request(status=ApprovalStatus.OUTCOME_UNKNOWN)
         response = ApprovalResponse(
@@ -600,18 +613,40 @@ class TestDecideTimeValidation:
         assert result["decision"] == "approve"
 
 
-class TestDirectDistributeOutcomeUnknown:
+class TestDirectDistributeErrors:
     @pytest.mark.asyncio
     async def test_outcome_unknown_maps_to_502(self):
+        from ad_seller.clients.ssp_base import SSPDealOutcomeUnknownError
+
+        exc_info, client = await self._distribute(SSPDealOutcomeUnknownError("check Index"))
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail["error"] == "outcome_unknown"
+        assert client.create_deal.call_args.args[0].targeting == {"geo": ["US"]}
+
+    @pytest.mark.asyncio
+    async def test_authentication_failure_maps_to_502(self):
+        from ad_seller.clients.ssp_base import SSPAuthenticationError
+
+        exc_info, _ = await self._distribute(
+            SSPAuthenticationError("Index Exchange login was rejected")
+        )
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == {
+            "error": "ssp_authentication_failed",
+            "message": "Index Exchange login was rejected",
+        }
+
+    async def _distribute(self, create_side_effect):
         from types import SimpleNamespace
 
-        from ad_seller.clients.ssp_base import SSPDealOutcomeUnknownError
         from ad_seller.services import deal_service
 
         client = AsyncMock()
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
-        client.create_deal = AsyncMock(side_effect=SSPDealOutcomeUnknownError("check Index"))
+        client.create_deal = AsyncMock(side_effect=create_side_effect)
         ssp_registry = MagicMock()
         ssp_registry.list_ssps.return_value = ["index_exchange"]
         ssp_registry.get_client.return_value = client
@@ -643,9 +678,7 @@ class TestDirectDistributeOutcomeUnknown:
             with pytest.raises(HTTPException) as exc_info:
                 await deal_service.distribute_deal_via_ssp(request)
 
-        assert exc_info.value.status_code == 502
-        assert exc_info.value.detail["error"] == "outcome_unknown"
-        assert client.create_deal.call_args.args[0].targeting == {"geo": ["US"]}
+        return exc_info, client
 
 
 def test_distribute_request_schema_accepts_dict_and_list_targeting():

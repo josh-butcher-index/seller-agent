@@ -1183,7 +1183,12 @@ async def _resolve_dsp_id_or_pending_approval(
 async def distribute_deal_via_ssp(request: Any) -> dict[str, Any]:
     """Distribute a deal through configured SSP(s) or deal-sync providers."""
     from ..clients.deal_sync_factory import build_deal_sync_registry
-    from ..clients.ssp_base import SSPDealCreateRequest, SSPDealOutcomeUnknownError, SSPDealType
+    from ..clients.ssp_base import (
+        SSPAuthenticationError,
+        SSPDealCreateRequest,
+        SSPDealOutcomeUnknownError,
+        SSPDealType,
+    )
     from ..clients.ssp_factory import build_ssp_registry
     from ..storage.factory import get_storage
 
@@ -1275,6 +1280,10 @@ async def distribute_deal_via_ssp(request: Any) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail={"error": "invalid_request", "message": str(e)})
     except SSPDealOutcomeUnknownError as e:
         raise HTTPException(status_code=502, detail={"error": "outcome_unknown", "message": str(e)})
+    except SSPAuthenticationError as e:
+        raise HTTPException(
+            status_code=502, detail={"error": "ssp_authentication_failed", "message": str(e)}
+        )
 
     if is_deal_sync:
         return {

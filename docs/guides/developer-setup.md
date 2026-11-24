@@ -80,7 +80,8 @@ PUBMATIC_API_KEY=your-pubmatic-key
 
 # Index Exchange (REST) — FQDN only, no path; the connector applies /api/deals itself
 INDEX_EXCHANGE_API_URL=https://app.indexexchange.com
-INDEX_EXCHANGE_API_KEY=your-keycloak-jwt-bearer-token
+INDEX_EXCHANGE_USERNAME=your-index-exchange-user@example.com
+INDEX_EXCHANGE_PASSWORD=your-index-exchange-password
 
 # Routing rules (optional)
 SSP_ROUTING_RULES=ctv:pubmatic,display:index_exchange

@@ -9,7 +9,7 @@ from functools import lru_cache
 from typing import Optional
 
 from dotenv import find_dotenv
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -199,9 +199,11 @@ class Settings(BaseSettings):
     magnite_api_key: Optional[str] = None
     # Index Exchange SSP (REST API)
     index_exchange_api_url: Optional[str] = None
-    # Keycloak JWT bearer token — not a static API key. Tokens expire and must
-    # be refreshed via the client-credentials grant (not yet automated here).
-    index_exchange_api_key: Optional[str] = None
+    # Index Exchange user credentials; the client logs in and refreshes its own token.
+    index_exchange_username: Optional[str] = None
+    index_exchange_password: Optional[SecretStr] = None
+    # No longer used: read only so a leftover static token gets a startup warning.
+    index_exchange_api_key: Optional[SecretStr] = None
 
     # Deal Sync Connectors (external deal-sync services, peer of SSP connectors)
     # Comma-separated list of provider names to enable

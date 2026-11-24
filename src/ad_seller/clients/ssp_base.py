@@ -30,6 +30,10 @@ class SSPDealOutcomeUnknownError(Exception):
     """create_deal may or may not have created the deal and this could not be confirmed."""
 
 
+class SSPAuthenticationError(Exception):
+    """The SSP client could not obtain or use credentials for the SSP's API."""
+
+
 # =============================================================================
 # SSP result models
 # =============================================================================

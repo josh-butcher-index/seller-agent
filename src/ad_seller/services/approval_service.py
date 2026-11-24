@@ -211,7 +211,7 @@ async def _resume_ssp_distribution(request, response):
     waiting on a dsp_id. On approval, the human's selected_dsp_id
     (response.modifications) is applied and create_deal() finally runs.
     """
-    from ..clients.ssp_base import SSPDealOutcomeUnknownError
+    from ..clients.ssp_base import SSPAuthenticationError, SSPDealOutcomeUnknownError
     from ..clients.ssp_factory import build_ssp_registry
     from ..events.models import ApprovalStatus
 
@@ -276,6 +276,9 @@ async def _resume_ssp_distribution(request, response):
     except SSPDealOutcomeUnknownError as exc:
         # The deal may exist in the SSP; resuming again re-checks it instead of re-creating.
         await _set_approval_status(request, ApprovalStatus.OUTCOME_UNKNOWN)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except SSPAuthenticationError as exc:
+        await _set_approval_status(request, ApprovalStatus.APPROVED)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception:
         await _set_approval_status(request, ApprovalStatus.APPROVED)

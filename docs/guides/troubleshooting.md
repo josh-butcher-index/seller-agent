@@ -110,18 +110,30 @@ The deal was created in the seller agent but not yet pushed to PubMatic.
 
 ### Index Exchange API Errors
 
-**Error: `Index Exchange: 401 Unauthorized`**
+The connector logs in with `INDEX_EXCHANGE_USERNAME` / `INDEX_EXCHANGE_PASSWORD`
+and refreshes its bearer token on its own; there is no token to re-issue by hand.
+Authentication failures return HTTP 502 with `"error": "ssp_authentication_failed"`.
 
-`INDEX_EXCHANGE_API_KEY` must be a valid Keycloak JWT bearer token, not a
-static API key — it expires and must be refreshed via the client-credentials
-grant. This is not automated yet; re-issue a fresh token in your `.env`.
+**Error: `Index Exchange login was rejected (401)`**
+
+The username or password is wrong. After a rejected login the connector makes
+no further login attempts (so it can't lock the account through repeated
+failures) until the credentials are fixed and the service is restarted.
+
+**Error: `Index Exchange login failed with HTTP 5xx` / `login request failed`**
+
+The Index Exchange authentication API was unreachable or errored. The connector
+retries with a backoff of up to 60 seconds; no action is needed unless it persists.
+
+**Warning at startup: `INDEX_EXCHANGE_USERNAME / INDEX_EXCHANGE_PASSWORD not set`**
+
+Index Exchange is skipped until both are set. `INDEX_EXCHANGE_API_KEY` is no
+longer used.
 
 **Error: `Index Exchange: 403 Forbidden`**
 
-Your token doesn't have permission for that operation.
-
-1. Verify `INDEX_EXCHANGE_API_KEY` in your `.env` is current (not expired).
-2. Contact your Index Exchange account manager to confirm the token has deal management scope.
+The user doesn't have permission for that operation. Contact your Index Exchange
+account manager to confirm the user has deal management access.
 
 **Error: `ValueError: external_deal_id is required` / `account_id is required` / `dsp_id is required`**
 

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from ad_seller.clients.ssp_base import (
     SSPClient,
@@ -39,7 +40,9 @@ def _make_settings(**overrides):
         "magnite_api_url": "",
         "magnite_api_key": "",
         "index_exchange_api_url": "",
-        "index_exchange_api_key": "",
+        "index_exchange_username": "",
+        "index_exchange_password": None,
+        "index_exchange_api_key": None,
     }
     defaults.update(overrides)
     return types.SimpleNamespace(**defaults)
@@ -59,7 +62,8 @@ class TestSSPFactory:
         settings = _make_settings(
             ssp_connectors="index_exchange",
             index_exchange_api_url="https://app.indexexchange.com",
-            index_exchange_api_key="test-key",
+            index_exchange_username="agent@example.com",
+            index_exchange_password=SecretStr("pw"),
         )
         registry = build_ssp_registry(settings)
         client = registry.get_client("index_exchange")
@@ -109,7 +113,8 @@ class TestSSPFactory:
         settings = _make_settings(
             ssp_connectors="index_exchange",
             index_exchange_api_url="https://app.indexexchange.com",
-            index_exchange_api_key="key",
+            index_exchange_username="agent@example.com",
+            index_exchange_password=SecretStr("pw"),
             ssp_routing_rules="ctv:index_exchange,display:index_exchange",
         )
         registry = build_ssp_registry(settings)
@@ -195,9 +200,7 @@ class TestIndexExchangeClient:
 
     @pytest.mark.asyncio
     async def test_create_deal_pmp_payload_shape(self):
-        client = IndexExchangeSSPClient(
-            base_url="https://app.indexexchange.com", api_key="test-key"
-        )
+        client = IndexExchangeSSPClient(base_url="https://app.indexexchange.com")
         mock_http = AsyncMock()
         mock_http.post.return_value = _mock_response(_ix_response())
         client._http = mock_http
@@ -759,7 +762,7 @@ class TestIndexExchangeCreateDealAmbiguousFailure:
 
     @staticmethod
     def _client(handler) -> IndexExchangeSSPClient:
-        client = IndexExchangeSSPClient(base_url="https://app.indexexchange.com", api_key="k")
+        client = IndexExchangeSSPClient(base_url="https://app.indexexchange.com")
         client._http = httpx.AsyncClient(
             base_url="https://app.indexexchange.com", transport=httpx.MockTransport(handler)
         )
@@ -899,10 +902,7 @@ class TestSSPErrors:
 
     @pytest.mark.asyncio
     async def test_http_error_propagates(self):
-        client = IndexExchangeSSPClient(
-            base_url="https://app.indexexchange.com",
-            api_key="test-key",
-        )
+        client = IndexExchangeSSPClient(base_url="https://app.indexexchange.com")
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
             "Bad Request", request=MagicMock(), response=MagicMock(status_code=400)

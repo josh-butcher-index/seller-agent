@@ -23,6 +23,7 @@ from .ssp_base import (
     SSPTroubleshootResult,
     SSPType,
 )
+from .token_provider import BearerTokenAuth, StaticTokenProvider, TokenProvider
 
 logger = logging.getLogger(__name__)
 
@@ -41,31 +42,37 @@ class RESTSSPClient(SSPClient):
         ssp_name: str = "REST SSP",
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        token_provider: Optional[TokenProvider] = None,
         auth_header: str = "Authorization",
         auth_prefix: str = "Bearer",
         timeout: int = 30,
     ) -> None:
+        """`token_provider` supplies an expiring token; `api_key` is a fixed one."""
         self.ssp_type = ssp_type
         self.ssp_name = ssp_name
         self._base_url = base_url
-        self._api_key = api_key
+        if token_provider is None and api_key:
+            token_provider = StaticTokenProvider(api_key)
+        self._token_provider = token_provider
         self._auth_header = auth_header
         self._auth_prefix = auth_prefix
         self._timeout = timeout
         self._http: Optional[httpx.AsyncClient] = None
 
     async def connect(self) -> None:
-        """Create HTTP client with auth headers."""
+        """Create the HTTP client, authenticating requests via the token provider."""
         if not self._base_url:
             raise ConnectionError(f"Base URL not configured for {self.ssp_name}")
 
-        headers = {}
-        if self._api_key:
-            headers[self._auth_header] = f"{self._auth_prefix} {self._api_key}"
+        auth = None
+        if self._token_provider is not None:
+            auth = BearerTokenAuth(
+                self._token_provider, header=self._auth_header, prefix=self._auth_prefix
+            )
 
         self._http = httpx.AsyncClient(
             base_url=self._base_url,
-            headers=headers,
+            auth=auth,
             timeout=self._timeout,
         )
         logger.info("Connected to %s REST API at %s", self.ssp_name, self._base_url)

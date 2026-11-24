@@ -26,6 +26,11 @@ All notable changes to the IAB Tech Lab Seller Agent are documented here.
 
 ### Changed
 
+- Index Exchange SSP connector now logs in with `INDEX_EXCHANGE_USERNAME` /
+  `INDEX_EXCHANGE_PASSWORD` and refreshes its own bearer token, replacing the
+  static `INDEX_EXCHANGE_API_KEY` that expired and needed a manual restart
+  (#119). Built on a reusable `RefreshingTokenProvider` for REST SSP clients;
+  authentication failures return 502 `ssp_authentication_failed`.
 - Index Exchange SSP connector rewritten against the real `/v3/deals` API
   (create, get, list, update, clone, troubleshoot, seat-ID to DSP
   resolution). Seat IDs that resolve to several DSPs pause for operator
