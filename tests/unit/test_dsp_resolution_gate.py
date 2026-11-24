@@ -523,6 +523,27 @@ class TestResumeSSPDistributionHardening:
         assert "login was rejected" in exc_info.value.detail
         assert self.storage._store["approval:apr-999"]["status"] == "approved"
 
+    @pytest.mark.asyncio
+    async def test_unconfigured_ssp_maps_to_503_without_consuming(self):
+        request = self._approval_request(status=ApprovalStatus.APPROVED)
+        response = ApprovalResponse(
+            approval_id="apr-999", decision="approve", modifications={"selected_dsp_id": 52}
+        )
+        registry, ssp = self._mock_registry(self._created_deal())
+        registry.get_client.side_effect = KeyError("SSP 'index_exchange' not registered")
+        storage = _storage()
+        with (
+            patch("ad_seller.clients.ssp_factory.build_ssp_registry", return_value=registry),
+            patch("ad_seller.storage.factory.get_storage", return_value=storage),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await _resume_ssp_distribution(request, response)
+
+        assert exc_info.value.status_code == 503
+        assert "index_exchange" in exc_info.value.detail
+        assert "approval:apr-999" not in storage._store
+        ssp.create_deal.assert_not_called()
+
     async def _resume_unknown(self, find_result=None, find_side_effect=None):
         request = self._approval_request(status=ApprovalStatus.OUTCOME_UNKNOWN)
         response = ApprovalResponse(

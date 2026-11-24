@@ -231,7 +231,17 @@ async def _resume_ssp_distribution(request, response):
     create_request = _build_dsp_resolution_create_request(request, response.modifications)
 
     registry = build_ssp_registry()
-    ssp = registry.get_client(request.flow_state_snapshot["ssp_name"])
+    ssp_name = request.flow_state_snapshot["ssp_name"]
+    try:
+        ssp = registry.get_client(ssp_name)
+    except KeyError:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"SSP '{ssp_name}' is not configured, so approval {request.approval_id} cannot "
+                "be resumed yet. Check the SSP's settings and the startup logs."
+            ),
+        )
 
     def _success(result) -> dict[str, Any]:
         return {

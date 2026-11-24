@@ -55,10 +55,9 @@ class StaticTokenProvider(TokenProvider):
 
 
 class RefreshingTokenProvider(TokenProvider):
-    """Caches an expiring token and renews it by refresh, falling back to login.
+    """Caches an expiring token, renewing it by refresh or login; safe across threads and loops.
 
-    Safe to share across threads and event loops (one asyncio.Lock per loop). A rejected
-    login is never retried, so a wrong password can't trip brute-force detection.
+    A rejected login is never retried, so a wrong password can't trip brute-force detection.
     """
 
     def __init__(
@@ -83,7 +82,8 @@ class RefreshingTokenProvider(TokenProvider):
         self._access_token: Optional[str] = None
         self._refresh_token: Optional[str] = None
         self._refresh_at = 0.0
-        self._credentials_rejected: Optional[CredentialsRejectedError] = None
+        self._expires_at = 0.0
+        self._credentials_rejected_message: Optional[str] = None
         self._backoff_seconds = 0.0
         self._retry_login_at = 0.0
         self._last_login_error: Optional[SSPAuthenticationError] = None
@@ -106,19 +106,44 @@ class RefreshingTokenProvider(TokenProvider):
             token = self._cached_token(rejected_token)
             if token is not None:
                 return token
-            grant = await self._renew()
+            try:
+                grant = await self._renew()
+            except CredentialsRejectedError:
+                raise
+            except SSPAuthenticationError as exc:
+                token = self._unexpired_token(rejected_token)
+                if token is None:
+                    raise
+                logger.warning(
+                    "%s token renewal failed (%s); using the current token until it expires",
+                    self.provider_name,
+                    exc,
+                )
+                return token
             self._store(grant)
             return grant.access_token
 
     def _cached_token(self, rejected_token: Optional[str]) -> Optional[str]:
         with self._state_lock:
-            if self._credentials_rejected is not None:
-                raise self._credentials_rejected
+            self._raise_if_credentials_rejected()
             if self._access_token is None or self._access_token == rejected_token:
                 return None
             if self._clock() >= self._refresh_at:
                 return None
             return self._access_token
+
+    def _unexpired_token(self, rejected_token: Optional[str]) -> Optional[str]:
+        with self._state_lock:
+            if self._access_token is None or self._access_token == rejected_token:
+                return None
+            if self._clock() >= self._expires_at:
+                return None
+            return self._access_token
+
+    def _raise_if_credentials_rejected(self) -> None:
+        # A new instance per raise: re-raising a stored one grows its __traceback__ every time.
+        if self._credentials_rejected_message is not None:
+            raise CredentialsRejectedError(self._credentials_rejected_message)
 
     def _loop_lock(self) -> asyncio.Lock:
         loop = asyncio.get_running_loop()
@@ -136,19 +161,22 @@ class RefreshingTokenProvider(TokenProvider):
         if refresh_token:
             try:
                 return await self._refresh(refresh_token)
-            except SSPAuthenticationError as exc:
+            except CredentialsRejectedError as exc:
                 logger.info(
-                    "%s token refresh failed (%s); logging in again", self.provider_name, exc
+                    "%s refresh token was rejected (%s); logging in again", self.provider_name, exc
                 )
                 with self._state_lock:
-                    self._refresh_token = None
+                    # Another event loop may have stored a newer refresh token meanwhile.
+                    if self._refresh_token == refresh_token:
+                        self._refresh_token = None
+            except SSPAuthenticationError as exc:
+                logger.info("%s token refresh failed (%s); trying a login", self.provider_name, exc)
 
         return await self._login_with_backoff()
 
     async def _login_with_backoff(self) -> TokenGrant:
         with self._state_lock:
-            if self._credentials_rejected is not None:
-                raise self._credentials_rejected
+            self._raise_if_credentials_rejected()
             wait_seconds = self._retry_login_at - self._clock()
             if wait_seconds > 0 and self._last_login_error is not None:
                 raise SSPAuthenticationError(
@@ -160,7 +188,7 @@ class RefreshingTokenProvider(TokenProvider):
             return await self._login()
         except CredentialsRejectedError as exc:
             with self._state_lock:
-                self._credentials_rejected = exc
+                self._credentials_rejected_message = str(exc)
             logger.error(
                 "%s login was rejected; no further login attempts until the "
                 "credentials are fixed and the service is restarted",
@@ -183,6 +211,7 @@ class RefreshingTokenProvider(TokenProvider):
             self._access_token = grant.access_token
             self._refresh_token = grant.refresh_token or self._refresh_token
             self._refresh_at = self._clock() + grant.expires_in - margin
+            self._expires_at = self._clock() + grant.expires_in
             self._backoff_seconds = 0.0
             self._retry_login_at = 0.0
             self._last_login_error = None
@@ -250,6 +279,6 @@ class BearerTokenAuth(httpx.Auth):
         response = yield request
         if response.status_code == 401:
             raise SSPAuthenticationError(
-                f"{request.url.host} rejected a newly issued token (401) for "
+                f"{request.url.host} returned 401 again after the token was renewed, for "
                 f"{request.method} {request.url.path}"
             )

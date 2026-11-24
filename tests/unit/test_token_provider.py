@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import traceback
 
 import httpx
 import pytest
@@ -16,7 +17,9 @@ from ad_seller.clients.ssp_index_exchange import (
 from ad_seller.clients.token_provider import (
     BearerTokenAuth,
     CredentialsRejectedError,
+    RefreshingTokenProvider,
     StaticTokenProvider,
+    TokenGrant,
     clear_shared_token_providers,
 )
 
@@ -204,13 +207,15 @@ class TestIndexExchangeTokenLifecycle:
         assert index.count(DEALS_PATH) == 3
 
     @pytest.mark.asyncio
-    async def test_401_with_a_newly_issued_token_raises_authentication_error(self):
+    async def test_401_after_renewing_the_token_raises_authentication_error(self):
         index = FakeIndex()
         provider = _provider(index)
         async with _deals_client(index, provider) as http:
             await http.get(DEALS_PATH)
             index.deals_status = 401
-            with pytest.raises(SSPAuthenticationError, match="rejected a newly issued token"):
+            with pytest.raises(
+                SSPAuthenticationError, match="401 again after the token was renewed"
+            ):
                 await http.get(DEALS_PATH)
 
         assert index.count(DEALS_PATH) == 3
@@ -240,6 +245,89 @@ class TestIndexExchangeTokenLifecycle:
 
         assert set(tokens) == {"access-2"}
         assert index.count("/refresh") == 1
+
+
+class TestRenewalFailureHandling:
+    @pytest.mark.asyncio
+    async def test_unexpired_token_is_used_when_renewal_fails(self, caplog):
+        index = FakeIndex(expires_in=300)
+        clock = FakeClock()
+        provider = _provider(index, clock)
+        await provider.get_token()
+        index.refresh_status = 503
+        index.login_status = 503
+        clock.now += 250  # inside the refresh margin, before expiry
+
+        with caplog.at_level(logging.WARNING):
+            assert await provider.get_token() == "access-1"
+        assert "using the current token until it expires" in caplog.text
+
+        clock.now += 50  # now actually expired
+        with pytest.raises(SSPAuthenticationError):
+            await provider.get_token()
+
+    @pytest.mark.asyncio
+    async def test_rejected_token_is_not_reused_when_renewal_fails(self):
+        index = FakeIndex(expires_in=300)
+        provider = _provider(index)
+        await provider.get_token()
+        index.refresh_status = 503
+        index.login_status = 503
+
+        with pytest.raises(SSPAuthenticationError):
+            await provider.get_token(rejected_token="access-1")
+
+    @pytest.mark.asyncio
+    async def test_transient_refresh_failure_keeps_the_refresh_token(self):
+        index = FakeIndex(expires_in=300)
+        clock = FakeClock()
+        provider = _provider(index, clock)
+        await provider.get_token()
+        index.refresh_status = 503
+        index.login_status = 503
+        clock.now += 250
+        await provider.get_token()  # falls back to the unexpired token
+
+        index.refresh_status = None
+        index.login_status = 200
+        clock.now += 10
+        assert await provider.get_token() == "access-2"
+        assert index.calls[-1] == "/api/authentication/v1/refresh"
+        assert index.count("/login") == 2  # the initial login and the one failed attempt
+
+    @pytest.mark.asyncio
+    async def test_rejected_refresh_does_not_clear_a_newer_refresh_token(self):
+        class RacingProvider(RefreshingTokenProvider):
+            async def _login(self):
+                return TokenGrant(access_token="from-login", expires_in=300)
+
+            async def _refresh(self, refresh_token):
+                # Another event loop stores a newer refresh token while this refresh fails.
+                self._refresh_token = "RT2"
+                raise CredentialsRejectedError("refresh token rejected")
+
+        provider = RacingProvider(provider_name="Test")
+        provider._refresh_token = "RT1"
+
+        await provider.get_token()
+        assert provider._refresh_token == "RT2"
+
+    @pytest.mark.asyncio
+    async def test_rejected_login_raises_a_new_exception_each_time(self):
+        index = FakeIndex()
+        index.login_status = 401
+        provider = _provider(index)
+
+        raised = []
+        for _ in range(20):
+            with pytest.raises(CredentialsRejectedError) as exc_info:
+                await provider.get_token()
+            raised.append(exc_info.value)
+
+        assert len({id(exc) for exc in raised}) == 20
+        assert {str(exc) for exc in raised} == {str(raised[0])}
+        depth = [len(traceback.extract_tb(exc.__traceback__)) for exc in raised]
+        assert depth[-1] == depth[1]
 
 
 def test_shared_provider_works_across_event_loops():
